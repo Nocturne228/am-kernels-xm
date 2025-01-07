@@ -2,10 +2,12 @@
 #include <stdio.h>
 #include <klib-macros.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define FPS 30
 #define COLOR_WHITE 0xFFFFFF
 #define COLOR_BLACK 0x000000
+#define BUFFER_ROWS 10
 
 typedef struct {
   uint8_t pixel[VIDEO_ROW * VIDEO_COL / 8];
@@ -40,18 +42,17 @@ int main() {
   // 计算缩放比例
   int scale_x = screen_w / VIDEO_COL;
   int scale_y = screen_h / VIDEO_ROW;
-  int scale = (scale_x < scale_y) ? scale_x : scale_y; // 取小的以确保完全显示
+  int scale = (scale_x < scale_y) ? scale_x : scale_y;
   if (scale < 1) scale = 1;
 
   // 计算实际显示区域
   int disp_w = VIDEO_COL * scale;
   int disp_h = VIDEO_ROW * scale;
-  // 计算居中偏移
   int offset_x = (screen_w - disp_w) / 2;
   int offset_y = (screen_h - disp_h) / 2;
 
-  // 创建行缓冲区
-  uint32_t *fb = malloc(disp_w * sizeof(uint32_t));
+  // 创建多行缓冲区
+  uint32_t *fb = malloc(disp_w * BUFFER_ROWS * sizeof(uint32_t));
   
   frame_t *f = (void *)&video_payload;
   frame_t *fend = (void *)&video_payload_end;
@@ -65,32 +66,44 @@ int main() {
   
   uint64_t now = io_read(AM_TIMER_UPTIME).us;
   
-  // 先清屏为黑色
-  for (int y = 0; y < screen_h; y++) {
-    for (int x = 0; x < screen_w; x++) {
-      fb[x] = COLOR_BLACK;
+  // 清屏优化：一次绘制多行
+  for (int y = 0; y < screen_h; y += BUFFER_ROWS) {
+    int rows = (y + BUFFER_ROWS > screen_h) ? (screen_h - y) : BUFFER_ROWS;
+    for (int i = 0; i < disp_w * rows; i++) {
+      fb[i] = COLOR_BLACK;
     }
-    io_write(AM_GPU_FBDRAW, 0, y, fb, screen_w, 1, false);
+    io_write(AM_GPU_FBDRAW, 0, y, fb, screen_w, rows, false);
   }
   
   for (; f < fend; f++) {
-    // 逐行绘制
-    for (int y = 0; y < VIDEO_ROW; y++) {
-      // 准备这一行的缩放后像素
-      for (int x = 0; x < VIDEO_COL; x++) {
-        uint8_t p = getbit(f->pixel, y * VIDEO_COL + x);
-        uint32_t color = p ? COLOR_BLACK : COLOR_WHITE;
-        // 填充缩放后的像素
-        for (int sx = 0; sx < scale; sx++) {
-          fb[x * scale + sx] = color;
+    // 批量绘制多行
+    for (int y = 0; y < VIDEO_ROW; y += BUFFER_ROWS) {
+      int rows = (y + BUFFER_ROWS > VIDEO_ROW) ? (VIDEO_ROW - y) : BUFFER_ROWS;
+      int fb_idx = 0;
+      
+      // 准备多行像素数据
+      for (int row = 0; row < rows; row++) {
+        int curr_y = y + row;
+        for (int x = 0; x < VIDEO_COL; x++) {
+          uint8_t p = getbit(f->pixel, curr_y * VIDEO_COL + x);
+          uint32_t color = p ? COLOR_BLACK : COLOR_WHITE;
+          // 水平缩放
+          for (int sx = 0; sx < scale; sx++) {
+            fb[fb_idx++] = color;
+          }
+        }
+        // 填充剩余行（垂直缩放）
+        for (int sy = 1; sy < scale; sy++) {
+          memcpy(&fb[fb_idx], &fb[fb_idx - disp_w], disp_w * sizeof(uint32_t));
+          fb_idx += disp_w;
         }
       }
-      // 绘制放大后的行（重复scale次以实现垂直方向的缩放）
-      for (int sy = 0; sy < scale; sy++) {
-        io_write(AM_GPU_FBDRAW, offset_x, offset_y + y * scale + sy, 
-                fb, disp_w, 1, false);
-      }
+      
+      // 一次绘制多行
+      io_write(AM_GPU_FBDRAW, offset_x, offset_y + y * scale, 
+              fb, disp_w, rows * scale, false);
     }
+    
     // 刷新屏幕
     io_write(AM_GPU_FBDRAW, 0, 0, NULL, 0, 0, true);
 
