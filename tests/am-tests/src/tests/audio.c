@@ -1,11 +1,43 @@
 #include <amtest.h>
 
-#define AUDIO_FREQ 44100 // 音频采样率
-#define FRAME_RATE 30    // 每秒帧数
+#define AUDIO_FREQ 44100
+#define FPS 60
+
+#define RESET     "\033[0m"
+#define MAGENTA   "\033[35m"
+#define RED       "\033[31m"
+
+#define SHOW(color, fmt, ...) printf(color fmt RESET, ##__VA_ARGS__)
+
+#include <stdio.h>
+
+void show_progress(int progress, int total) {
+  static int last_pos = -1;
+  static int last_percent = -1;
+  int percent = (progress * 100) / total;
+  int bar_width = 50;
+
+  int pos = (progress * bar_width) / total;
+
+  if (pos != last_pos || percent != last_percent) {
+    SHOW(MAGENTA, "\r[");
+    for (int i = 0; i < bar_width; i++) {
+      if (i < pos) {
+        SHOW(MAGENTA, "#");
+      } else {
+        SHOW(MAGENTA, " ");
+      }
+    }
+    SHOW(MAGENTA, "] %d%%", percent);
+
+    last_pos = pos;
+    last_percent = percent;
+  }
+}
 
 void audio_test() {
   if (!io_read(AM_AUDIO_CONFIG).present) {
-    printf("WARNING: %s does not support audio\n", TOSTRING(__ARCH__));
+    SHOW(RED, "WARNING: %s does not support audio\n", TOSTRING(__ARCH__));
     return;
   }
 
@@ -18,22 +50,22 @@ void audio_test() {
   sbuf.start = &audio_payload;
 
   uint64_t now = io_read(AM_TIMER_UPTIME).us;
-  uint32_t frame_audio_size = AUDIO_FREQ / FRAME_RATE * sizeof(int16_t); // 每帧需要播放的音频数据大小
+  uint32_t frame_audio_size =
+      AUDIO_FREQ / FPS * sizeof(int16_t);
 
   while (nplay < audio_len) {
-    // 计算本帧需要播放的音频长度
-    int len = (audio_len - nplay > frame_audio_size ? frame_audio_size : audio_len - nplay);
+    int len = (audio_len - nplay > frame_audio_size ? frame_audio_size
+                                                    : audio_len - nplay);
     sbuf.end = sbuf.start + len;
     io_write(AM_AUDIO_PLAY, sbuf);
 
     sbuf.start += len;
     nplay += len;
-    printf("Already play %d/%d bytes of data\n", nplay, audio_len);
+    show_progress(nplay, audio_len);
 
-    // 等待下一帧时间
-    uint64_t next = now + (1000 * 1000 / FRAME_RATE); // 下一帧的时间戳
-    while (io_read(AM_TIMER_UPTIME).us < next);       // 等待至下一帧时间
-    now = next;                                       // 更新当前时间
+    uint64_t next = now + (1000 * 1000 / FPS);
+    while (io_read(AM_TIMER_UPTIME).us < next);
+    now = next;
   }
 
   // wait until the audio finishes
